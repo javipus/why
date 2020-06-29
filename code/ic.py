@@ -1,6 +1,8 @@
 from functools import reduce
-from itertools import chain, combinations
+from itertools import chain, combinations, product
 import collections
+import numpy as np
+import pandas as pd
 import networkx as nx
 from scipy.stats import chi2
 
@@ -114,12 +116,26 @@ class Probability:
         raise NotImplementedError
 
     def _chi2(self, x, y, z):
-        # TODO debug this
-        # I think it's not doing what's supposed to
-        # Maybe work out some examples yourself and write them as tests
+        # TODO figure out how to use scipy's chi2_contingency
+        return NotImplementedError
+
+    @property
+    def _contigency_table(self):
+        table = np.zeros(shape=[self._joint[v].nunique() for v in self._vars])
+        levels = {v: {val: k for k, val in zip(range(d[v].nunique()), d[v].unique())} for v in d.columns if v!='Pr'}
+
+        for _, row in self._joint.iterrows():
+            table[tuple([levels[v][row[v]] for v in self._vars])] = int(self._N*row['Pr'])
+
+        return table
+
+    def _deprecated_chi2(self, x, y, z):
+        # NB: see _chi2
 
         d = self._joint.copy()
-        x, y, z = map(list, (x, y, z)) # wrap in list if they're not already
+        # Wrap vars into lists
+        x, y = [x], [y]
+        z = list(z) if not isinstance(z, str) else [z]
         w = x + y + z # relevant variables
         v = [v for v in self._vars if v not in w] # marginalize over these
 
@@ -138,6 +154,7 @@ class Probability:
 
         # Compute chi2 
         chi2_ = 0
+        print(pxz)
 
         for _, row in d.iterrows():
             x_, y_, z_ = row[x], row[y], row[z]
@@ -148,11 +165,12 @@ class Probability:
             pyz_ = conditional(pyz, {k: data[k] for k in y+z})['Pr'].values
             pxz_ = conditional(pxz, {k: data[k] for k in x+z})['Pr'].values
             pz_ = conditional(pz, {k: data[k] for k in z})['Pr'].values
-            p0 = pyz_*pxz_/pz_
+            p0 = safe_div(pyz_*pxz_, pz_)
 
-            print(p0) #, pyz_, pxz_, pz_)
+            #print(row)
+            print(x_.values, y_.values, z_.values, pxz_) #, pxz_, pz_)
 
-            chi2_ += (1 - pxyz_/p0)**2
+            chi2_ += (1 - safe_div(pxyz_, p0))**2
         
         chi2_ *= self._N
 
@@ -166,6 +184,15 @@ class Probability:
 
     def _conditional(self, conds):
         return conditional(self._joint, conds)
+
+def safe_div(x, y):
+    try:
+        return x/y
+    except ZeroDivisionError as e:
+        if x==0:
+            return 0
+        else:
+            raise e
 
 def update(joint, *marginalize, **condition):
     """
@@ -209,9 +236,78 @@ def conditional(joint, conds):
     new = joint[obs_cond].copy()
     den = new['Pr'].sum()
 
-    if new.empty or den==0:
+    if new.empty:# or den==0:
+        #print(new)
+        #print(den)
         raise ValueError('Can\'t condition on a probability 0 set!')
 
-    new['Pr'] *= 1/den
+    new['Pr'] = safe_div(new['Pr'],den)
 
     return new
+
+def get_joint(prob, **vars):
+    """
+    Given
+        prob :: vars -> joint_probability
+        vars :: {var_name: var_codomain}
+    
+    Put everything into a dataframe with columns = vars.keys() + 'Pr'
+    """
+
+    df = pd.DataFrame(
+        product(*vars.values()),
+        columns = vars.keys()
+    )
+
+    df['Pr'] = df.apply(lambda args: prob(*args), axis=1)
+
+    return df
+
+def sprinkler(p, q0, q1, r0, r1):
+    """
+    Probability distribution for the sprinkler graph:
+
+        Season -> Rain -> Wet
+        Season -> Sprinkler -> Wet
+
+    with all variables in {0,1} and
+
+        P[Season=0] = P[Season=1] = p
+        P[Sprinkler=1|Season] ~ Ber(q1*Season + q0*(1-Season))
+        P[Rain=1|Season] ~ Ber(r1*Season + r0*(1-Season))
+        P[Wet|Sprinkler, Rain] = Sprinkler OR Rain
+    """
+
+    pse = lambda se: [1-p, p][se]
+    psp = lambda sp, se: [[1-q0, 1-q1], [q0, q1]][sp][se]
+    pr = lambda r, se: [[1-r0, 1-r1], [r0, r1]][r][se]
+    pw = lambda w, sp, r: 1 if (bool(w) == bool(sp or r)) else 0
+
+    return lambda se, sp, r, w: pse(se)*psp(sp,se)*pr(r,se)*pw(w,sp,r)
+
+if __name__=='__main__':
+    
+    from sympy import symbols, simplify
+
+    vars_ = {
+        'se': [0,1],
+        'sp': [0,1],
+        'r': [0,1],
+        'w': [0,5],
+    }
+
+    #params = symbols('p q0 q1 r0 r1', real=True, nonnegative=True)
+
+    params = {
+        'p': 1/2,
+        'q0': 1/4,
+        'q1': 3/4,
+        'r0': 3/4,
+        'r1': 1/4,
+    }
+
+    N = 1000
+
+    d = get_joint(sprinkler(**params), **vars_)
+
+    p = Probability(d, N)
