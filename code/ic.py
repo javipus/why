@@ -1,10 +1,11 @@
-from functools import reduce
+from functools import reduce, partial
 from itertools import chain, combinations, product
 import collections
 import numpy as np
 import pandas as pd
 import networkx as nx
 from scipy.stats import chi2
+import scipy
 
 def IC(P):
     ## STEP 1: test independences
@@ -72,6 +73,41 @@ def IC(P):
 
     return g
 
+class Prob:
+
+    def __init__(self, dom, p):
+        self.dom = dom
+        self._vars = set(dom.keys())
+        self.p = p
+        # TODO assert argspec p = dom
+
+    def marginal(self, *args):
+        return Prob(
+            {v: self.dom[v] for v in self._vars-set(args)},
+            lambda **kwds: sum([self.p(**{**kwds, **{args: item}}) for item in product([self.dom[m] for m in args])])
+        )
+
+    def conditional(self, **kwds):
+        return self[kwds] / self.marginal(self._vars-set(kwds.keys()))[kwds]
+
+    @property
+    def joint(self):
+        pass
+
+    def _restrict(self, **kwds):
+        pass
+
+    @property
+    def p(self):
+        return self._p
+
+    @p.setter
+    def p(self, new):
+        assert hasattr(new, '__call__'), "Probability must be callable"
+        self._p = new
+
+    def __div__(self, other):
+        return Prob(self.dom, lambda *args, **kwds: self.p(*args, **kwds)/other)
 class Probability:
     """
     Joint empirical probability distribution.
@@ -115,12 +151,13 @@ class Probability:
 
         raise NotImplementedError
 
-    def _chi2(self, x, y, z):
+    def _chi2(self): #, x, y, z):
         # TODO figure out how to use scipy's chi2_contingency
-        return NotImplementedError
+
+        return scipy.stats.chi2_contingency(self._contingency_table)
 
     @property
-    def _contigency_table(self):
+    def _contingency_table(self):
         table = np.zeros(shape=[self._joint[v].nunique() for v in self._vars])
         levels = {v: {val: k for k, val in zip(range(d[v].nunique()), d[v].unique())} for v in d.columns if v!='Pr'}
 
@@ -184,6 +221,52 @@ class Probability:
 
     def _conditional(self, conds):
         return conditional(self._joint, conds)
+
+class Sprinkler(Probability):
+
+    def __init__(self, N=1000, **params):
+
+        self._vars = {
+            'se': [0,1],
+            'sp': [0,1],
+            'r': [0,1],
+            'w': [0,1],
+        }
+
+        super(Sprinkler, self).__init__(
+            get_joint(sprinkler(**params), **self._vars),
+            N = N
+        )
+
+    def check_independence(self, x, y, z):
+        """Manually override independence check to test IC algorithm while I implement the real thing."""
+
+        g = nx.DiGraph()
+        g.add_nodes_from(self._vars)
+        g.add_edges_from(
+            [('se', 'r')],
+            [('se', 'sp')],
+            [('sp', 'w')],
+            [('r', 'w')],
+        )
+
+        return d_separates(g, x, y, z)
+
+def d_separates(g, x, y, z):
+    for x_ in x:
+        for y_ in y:
+            paths = nx.all_simple_paths(g, x_, y_)
+            for path in paths:
+                if path_d_separates(g, path, z):
+                    continue
+                else:
+                    return False
+    else:
+        return True
+
+def path_d_separates(g, path, z):
+    # TODO
+    pass
 
 def safe_div(x, y):
     try:
@@ -263,7 +346,7 @@ def get_joint(prob, **vars):
 
     return df
 
-def sprinkler(p, q0, q1, r0, r1):
+def sprinkler(p=.5, q0=.25, q1=.75, r0=.75, r1=.25):
     """
     Probability distribution for the sprinkler graph:
 
@@ -293,7 +376,7 @@ if __name__=='__main__':
         'se': [0,1],
         'sp': [0,1],
         'r': [0,1],
-        'w': [0,5],
+        'w': [0,1],
     }
 
     #params = symbols('p q0 q1 r0 r1', real=True, nonnegative=True)
@@ -311,3 +394,5 @@ if __name__=='__main__':
     d = get_joint(sprinkler(**params), **vars_)
 
     p = Probability(d, N)
+
+    s = Sprinkler(**params)
