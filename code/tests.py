@@ -1,5 +1,6 @@
 import pytest
 import networkx as nx
+
 ## d-separation ##
 from .d_separation import d_separates, path_d_separates
 
@@ -95,3 +96,18 @@ def test_blocks(g, x, y, z):
 )
 def test_not_blocks(g, x, y, z):
     assert not d_separates(g, x, y, z)
+
+
+## causal models ##
+from .causal_model import CausalModel, CausalMechanism
+
+CausalModel(
+    g = kite,
+    fs = {},
+    us = {},
+)
+
+CausalMechanism(
+    x = 1,
+    f = lambda x: x,
+)
