@@ -1,5 +1,11 @@
 import pytest
 import networkx as nx
+import numpy as np
+
+from functools import reduce
+from itertools import product
+
+lproduct = lambda *args, **kwds: list(product(*args, **kwds))
 
 ## d-separation ##
 from .d_separation import d_separates, path_d_separates
@@ -98,16 +104,60 @@ def test_not_blocks(g, x, y, z):
     assert not d_separates(g, x, y, z)
 
 
-## causal models ##
-from .causal_model import CausalModel, CausalMechanism
+## random variables ##
+from .causal_model import RandomVariable as RV
+from .causal_model import RandomVector as RVV
 
-CausalModel(
-    g = kite,
-    fs = {},
-    us = {},
-)
+domains = {
+    '_bool' : (False, True),
+    '_cat' : ('a', 'b', 'c'),
+    '_set' : set(range(10)),
+    '_list' : [x**2 for x in range(5)],
+    '_interval' : np.linspace(0, 1, 100),
+}
 
-CausalMechanism(
-    x = 1,
-    f = lambda x: x,
+pmfs = {
+    'unif_n': lambda n: lambda arg: 1/n,
+    'delta': lambda x0: lambda arg: 1 if arg==x0 else 0,
+}
+
+eps = 1e-10
+
+@pytest.mark.parametrize(
+    'domain, name, pmf',
+    [(dom, name, pmfs['unif_n']) for name, dom in domains.items()],
 )
+def test_unif_rv_normalized(domain, name, pmf, tol=eps):
+    rv = RV(domain, pmf(len(domain)), name)
+    assert abs(sum(rv.pmf(x) for x in rv.domain)-1) < tol
+
+@pytest.mark.parametrize(
+    'domain, name, pmf',
+    [(dom, name, pmfs['delta']) for name, dom in domains.items()],
+)
+def test_delta_rv_normalized(domain, name, pmf, tol=eps):
+    for x0 in domain:
+        rv = RV(domain, pmf(x0), name)
+        assert abs(sum(rv.pmf(x) for x in rv.domain)-1) < tol
+
+@pytest.mark.parametrize(
+    'n',
+    range(1, 4)
+)
+def test_unif_vectors(n, tol=eps):
+    doms = lproduct(domains.values(), repeat=n)
+
+    for ds in doms:
+        rvs = [RV(d, pmfs['unif_n'](len(d))) for d in ds]
+        rvv = RVV.from_list(rvs)
+        
+        _len = lambda it: sum(1 for _ in it)
+        _prod = lambda it: reduce(lambda x, y: x*y, it)
+        
+        assert _len(rvv.domain) == _prod(map(_len, [rv.domain for rv in rvs]))
+        assert abs(sum(rvv.pmf(*x) for x in rvv.domain) - 1) < tol
+        
+        for x in rvv.domain:
+            assert rvv.pmf(*x) == _prod(rv.pmf(xx) for xx, rv in zip(x, rvs))
+
+# TODO test CausalModel and CausalMechanism

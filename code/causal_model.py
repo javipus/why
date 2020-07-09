@@ -3,28 +3,32 @@ from itertools import product
 import networkx as nx
 from .d_separation import d_separates
 
+lproduct = lambda *args, **kwds: list(product(*args, **kwds))
+_prod = lambda it: reduce(lambda x, y: x*y, it)
+
 class RandomVariable:
-    # TODO test
+    """
+    Discrete random variable with finite domain.
+    """
 
     def __init__(self, domain, pmf, name=None):
         self.domain = domain
         self.pmf = pmf
-        if name is not None: self.name = name
+        self.name = name
 
 class RandomVector:
-    # TODO test
 
     def __init__(self, domains, pmfs, names=None):
-        self.domain = product(domains)
-        self.pmf = lambda *args: reduce(lambda x, y: x*y, [pmf(arg) for arg, pmf in zip(args, pmfs)])
-        if names is not None: self.names = names
+        self.domain = lproduct(*domains)
+        self.pmf = lambda *args: _prod(pmf(arg) for arg, pmf in zip(args, pmfs))
+        self.names = names if any(names) else None
 
     @classmethod
     def from_list(cls, rvs):
-        return cls.__init__(
+        return cls(
             domains = [rv.domain for rv in rvs],
-            pmfs = [rv.domain for rv in rvs],
-            names = map(lambda x: None if all([xx is None for xx in x]) else x, [rv.name if hasattr(rv, 'name') else None for rv in rvs]),
+            pmfs = [rv.pmf for rv in rvs],
+            names = [rv.name for rv in rvs],
         )
 
 class CausalMechanism:
@@ -46,7 +50,7 @@ class CausalModel(nx.DiGraph):
 
         # Enforce nodes are named RVs
         if not all([isinstance(x, RandomVariable) and\
-            hasattr(x, 'name') for x in g.nodes]):
+            x.name is not None for x in g.nodes]):
             raise TypeError("Nodes must be named random variables!")
 
         super(CausalModel, self).__init__(g)
@@ -69,7 +73,7 @@ class CausalModel(nx.DiGraph):
         self._noise_vars = set(self.nodes).difference(self._vars)
         self._noise_var_names = set([u.name for u in self._noise_vars])
 
-        # Markovian condition: U_i \perp U_j if 1!=j
+        # Markovian condition: U_i \perp U_j if i!=j
         self._prior = RandomVector(
             domains=[u.domain for u in self._noise_vars],
             pmfs = [u.pmf]
@@ -77,29 +81,30 @@ class CausalModel(nx.DiGraph):
 
         # Add causal mechanisms
         for x, f in fs.items():
-            assert x in g.nodes, "Variable {} in mechanisms but not in model!".format(x)
+            if x not in g.nodes:
+                raise ValueError("Variable {} in mechanisms but not in model!".format(x))
             nx.set_node_attributes(self, {x: CausalMechanism(x, f)}, 'causal_mechanism')
             # TODO enforce correct type signature
             # `assert parents(x) == fs[x].kwds` or something
             # otoh forcing the fs to have their parameter names tied to a specific graph seems suboptimal - can't reuse functions
 
-    def d_separates(self, x, y, z):
-        # TODO wrap args in list
-        return d_separates(self, x, y, z)
-
     @property
-    def prob(self):
+    def pmf(self):
         """Joint probability distribution."""
         def prob_(xs):
             for x in self.nodes:
-                if not (pa:=self.parents(x)):
-                    return nx.get_node_attributes(self, 'prob')[x]
+                if not (pa:=self.parents(x)): # noise var
+                    return nx.get_node_attributes(self, 'pmf')[x]
                 else:
                     f = nx.get_node_attributes(self, 'causal_mechanism')[x]
                     u = [p for p in pa if p not in self._vars]
-                    pu = nx.get_node_attributes(self, 'prob')[u]
+                    pu = nx.get_node_attributes(self, 'pmf')[u]
 
-                    return sum([(xs[x]==f(pai,u=ui))*pu(ui) for pai in pa.domain for ui in u.domain])
+                    return sum((xs[x]==f(pai,u=ui))*pu(ui) for pai in pa.domain for ui in u.domain)
+
+    def d_separates(self, x, y, z):
+        # TODO wrap args in list
+        return d_separates(self, x, y, z)
 
     def parents(self, x):
         return set([p for p in nx.all_neighbors(self, x) if (p, x) in self.edges])
